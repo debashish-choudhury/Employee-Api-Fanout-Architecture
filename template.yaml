@@ -1,0 +1,136 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  fan-out
+
+  Sample SAM Template for fan-out
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 3
+    Tracing: Active
+  Api:
+    TracingEnabled: True
+
+Resources:
+  KMSGenerateKey:
+    Type: AWS::KMS::Key
+    Properties: 
+      Description: "SSE encryption key"
+      KeyPolicy:
+        Statement: 
+            - 
+              Action: 
+                - kms:*
+              Effect: Allow
+              Resource: '*'
+              Principal: 
+                AWS: 'arn:aws:iam::449845850442:user/user-poc'
+            - 
+              Action: 
+                - KMS:Decrypt
+                - KMS:GenerateDataKey
+              Effect: Allow
+              Resource: '*'
+              Principal: '*'
+        
+  MyFirstQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: MyFirstQueueDemo
+      KmsMasterKeyId: !GetAtt KMSGenerateKey.KeyId
+
+  MySNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      KmsMasterKeyId: !GetAtt KMSGenerateKey.KeyId
+      TopicName: MyFirstSNSTopic
+      Subscription: 
+        - Endpoint: "arn:aws:sqs:ap-south-1:449845850442:MyFirstQueueDemo"
+          Protocol: "sqs"
+      
+  LambdaMessageToSNS:
+    Type: AWS::Serverless::Function # More info about Function Resource: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#awsserverlessfunction
+    Properties:
+      CodeUri: lambda_sns/
+      Handler: app.lambda_handler
+      Runtime: python3.7
+      Architectures:
+        - x86_64
+      Policies: 
+        - AmazonSNSFullAccess
+      Events:
+        PostAPI:
+          Type: Api # More info about API Event Source: https://github.com/awslabs/serverless-application-model/blob/master/versions/2016-10-31.md#api
+          Properties:
+            Path: /hello
+            Method: post
+
+  SQSQueueProcessorLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: sqs_to_lambda/
+      Handler: app.processor_data
+      Runtime: python3.7
+      Policies:
+        - AmazonSQSFullAccess
+      Events:
+        MySQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt MyFirstQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
+  SQSPolicySNSSubcribe:
+    Type: AWS::SQS::QueuePolicy
+    Properties: 
+      PolicyDocument: 
+        Statement: 
+          - 
+            Action: 
+              - "SQS:SendMessage"
+            Effect: "Allow"
+            Resource: !GetAtt MyFirstQueue.Arn
+            Principal: "*"
+            Condition:
+              ArnEquals:
+                "aws:SourceArn": "arn:aws:sns:ap-south-1:449845850442:MyFirstSNSTopic"
+      Queues: 
+        - "https://sqs.ap-south-1.amazonaws.com/449845850442/MyFirstQueueDemo"
+
+  # SQSPolicySNS:
+  #   Type: AWS::SQS::QueuePolicy
+  #   Properties:
+  #     PolicyDocument:
+  #       Version: '2022-08-04'
+  #       Id: MyQueuePolicy
+  #       Statement:
+  #       - Sid: Allow-SNS-SendMessage
+  #         Effect: Allow
+  #         Principal: "*"
+  #         Action:
+  #         - sqs:SendMessage
+  #         Resource: "arn:aws:sqs:ap-south-1:449845850442:MyFirstQueueDemo"
+  #         Condition:
+  #           ArnEquals:
+  #             aws:SourceArn: "arn:aws:sns:ap-south-1:449845850442:MyFirstSNSTopic"
+  #     Queues:
+  #       - "https://sqs.ap-south-1.amazonaws.com/449845850442/MyFirstQueueDemo"
+
+
+Outputs:
+  # ServerlessRestApi is an implicit API created out of Events key under Serverless::Function
+  # Find out more about other implicit resources you can reference within SAM
+  # https://github.com/awslabs/serverless-application-model/blob/master/docs/internals/generated_resources.rst#api
+  PostApi:
+    Description: "API Gateway endpoint URL for Prod stage for LambdaMessageToSNS function"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/hello/"
+  LambdaMessageToSNS:
+    Description: "Hello World Lambda Function ARN"
+    Value: !GetAtt LambdaMessageToSNS.Arn
+  LambdaMessageToSNSIamRole:
+    Description: "Implicit IAM Role created for LambdaMessageToSNS function"
+    Value: !GetAtt LambdaMessageToSNSRole.Arn
